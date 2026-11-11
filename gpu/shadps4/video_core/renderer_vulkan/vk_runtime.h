@@ -91,11 +91,14 @@ public:
 
     void SetBackingSamples(VideoCore::Image* image, u32 num_samples, bool copy_backing = true);
 
+    /// `skin_write`: a written buffer of a skinning dispatch (Rasterizer::SkinShader): taken as
+    /// written only, and its range is not a foreign write.
     void AccessBuffer(const VideoCore::Buffer* handle, u64 offset, u64 size,
-                      vk::PipelineStageFlags2 src_stage, vk::AccessFlags2 src_access);
+                      vk::PipelineStageFlags2 src_stage, vk::AccessFlags2 src_access,
+                      bool skin_write = false);
 
     bool IsBufferAccessed(const VideoCore::Buffer* handle, u64 offset, u64 size,
-                          bool check_read_access = false);
+                          bool check_read_access = false, bool skin_write = false);
 
     void FlushBarriers(std::source_location site = std::source_location::current());
 
@@ -147,17 +150,24 @@ private:
         u64 high;
         u32 epoch;
     };
-    std::vector<ReadHull> read_hulls;
     struct BigRead {
         u64 resource;
         u64 start;
         u64 end;
     };
-    std::vector<BigRead> big_reads;
-    u32 big_reads_epoch = 0;
-    u32 hulls_imprecise_epoch = 0;
-    void NoteExactRead(u64 resource, u64 start, u64 end);
-    bool ExactReadOverlap(u64 resource, u64 start, u64 end);
+    struct HullTable {
+        std::vector<ReadHull> hulls;
+        std::vector<BigRead> big;
+        u32 big_epoch = 0;
+        u32 imprecise_epoch = 0;
+    };
+    HullTable read_table;
+    // Test build: writes by anything but the skinning dispatches (uploads, copies, other
+    // shaders), kept the same way: a skinning dispatch's output that overlaps only the output
+    // ranges of earlier skinning dispatches takes no barrier (BB_SKIN_WW_BARRIERS=1: as before).
+    HullTable write_table;
+    void NoteExact(HullTable& table, u64 resource, u64 start, u64 end);
+    bool ExactOverlap(HullTable& table, u64 resource, u64 start, u64 end);
 };
 
 } // namespace Vulkan

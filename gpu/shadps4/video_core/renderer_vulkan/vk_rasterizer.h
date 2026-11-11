@@ -494,6 +494,10 @@ private:
     bool fault_process_pending{};
     bool attachment_feedback_loop{};
     bool needs_barrier{};
+    /// Test build: the compute shader being bound is one of Naughty Dog's skinning shaders
+    /// (cs 8f067540, 7d7e7206, 0c936dd6): its written buffers skip write-after-write barriers
+    /// against other skinning output (Runtime::IsBufferAccessed).
+    bool skin_bind{};
     // bbport: two-stage draw pipeline (stage B state; the thread is the last member so it
     // stops first).
     static inline thread_local const AmdGpu::Regs* stage_regs = nullptr;

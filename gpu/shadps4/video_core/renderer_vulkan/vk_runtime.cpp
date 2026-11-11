@@ -761,7 +761,7 @@ void Runtime::SetBackingSamples(VideoCore::Image* image, u32 num_samples, bool c
 }
 
 bool Runtime::IsBufferAccessed(const VideoCore::Buffer* handle, u64 offset, u64 size,
-                               bool check_read_access) {
+                               bool check_read_access, bool skin_write) {
     const AddressRange range = {
         .resource = reinterpret_cast<u64>(handle),
         .range_start = offset,
@@ -769,7 +769,20 @@ bool Runtime::IsBufferAccessed(const VideoCore::Buffer* handle, u64 offset, u64 
     };
     bool has_access = barrier_tracker.FindRange(range, Access::Write);
     if (has_access) {
-        WaitSites::NoteConflict(check_read_access ? 1 : 0);
+        static const bool skin_skip = [] {
+            const char* env = std::getenv("BB_SKIN_WW_BARRIERS");
+            const bool on = !(env && env[0] == '1');
+            std::printf("Barriers: skinning output after skinning output %s\n",
+                        on ? "takes none (test build)" : "takes one");
+            return on;
+        }();
+        if (skin_write && skin_skip &&
+            !ExactOverlap(write_table, range.resource, range.range_start, range.range_end)) {
+            has_access = false;
+            WaitSites::NoteConflict(4);
+        } else {
+            WaitSites::NoteConflict(skin_write ? 5 : check_read_access ? 1 : 0);
+        }
     }
     if (check_read_access && !has_access) {
         has_access |= barrier_tracker.FindRange(range, Access::Read);
@@ -781,7 +794,8 @@ bool Runtime::IsBufferAccessed(const VideoCore::Buffer* handle, u64 offset, u64 
                             on ? "need none unless the bytes overlap" : "take one per 4 KiB page");
                 return on;
             }();
-            if (exact && !ExactReadOverlap(range.resource, range.range_start, range.range_end)) {
+            if (exact &&
+                !ExactOverlap(read_table, range.resource, range.range_start, range.range_end)) {
                 has_access = false;
                 WaitSites::NoteConflict(3);
             } else {
@@ -804,29 +818,29 @@ inline u64 HullHash(u64 resource, u64 page) {
 }
 } // namespace
 
-void Runtime::NoteExactRead(u64 resource, u64 start, u64 end) {
-    if (hulls_imprecise_epoch == access_epoch) {
+void Runtime::NoteExact(HullTable& table, u64 resource, u64 start, u64 end) {
+    if (table.imprecise_epoch == access_epoch) {
         return;
     }
-    if (read_hulls.empty()) {
-        read_hulls.resize(HullSlots);
+    if (table.hulls.empty()) {
+        table.hulls.resize(HullSlots);
     }
     const u64 first = start >> HullPageBits, last = end >> HullPageBits;
     if (last - first >= HullMaxPages) {
-        if (big_reads_epoch != access_epoch) {
-            big_reads.clear();
-            big_reads_epoch = access_epoch;
+        if (table.big_epoch != access_epoch) {
+            table.big.clear();
+            table.big_epoch = access_epoch;
         }
-        for (const auto& big : big_reads) {
+        for (const auto& big : table.big) {
             if (big.resource == resource && big.start <= start && big.end >= end) {
                 return;
             }
         }
-        if (big_reads.size() >= 256) {
-            hulls_imprecise_epoch = access_epoch;
+        if (table.big.size() >= 256) {
+            table.imprecise_epoch = access_epoch;
             return;
         }
-        big_reads.push_back({resource, start, end});
+        table.big.push_back({resource, start, end});
         return;
     }
     for (u64 page = first; page <= last; ++page) {
@@ -836,7 +850,7 @@ void Runtime::NoteExactRead(u64 resource, u64 start, u64 end) {
         u64 slot = HullHash(resource, page);
         bool placed = false;
         for (u32 probe = 0; probe < HullProbes; ++probe, slot = (slot + 1) & (HullSlots - 1)) {
-            auto& hull = read_hulls[slot];
+            auto& hull = table.hulls[slot];
             if (hull.epoch != access_epoch) {
                 hull = {resource, page, low, high, access_epoch};
                 placed = true;
@@ -850,33 +864,36 @@ void Runtime::NoteExactRead(u64 resource, u64 start, u64 end) {
             }
         }
         if (!placed) {
-            hulls_imprecise_epoch = access_epoch; // table full here: every write takes its barrier
+            table.imprecise_epoch = access_epoch; // full here: every check says "overlaps"
             return;
         }
     }
 }
 
-bool Runtime::ExactReadOverlap(u64 resource, u64 start, u64 end) {
-    if (hulls_imprecise_epoch == access_epoch || read_hulls.empty()) {
+bool Runtime::ExactOverlap(HullTable& table, u64 resource, u64 start, u64 end) {
+    if (table.imprecise_epoch == access_epoch) {
         return true;
     }
-    if (big_reads_epoch == access_epoch) {
-        for (const auto& big : big_reads) {
+    if (table.big_epoch == access_epoch) {
+        for (const auto& big : table.big) {
             if (big.resource == resource && big.end >= start && big.start <= end) {
                 return true;
             }
         }
     }
+    if (table.hulls.empty()) {
+        return false; // nothing small was ever noted
+    }
     const u64 first = start >> HullPageBits, last = end >> HullPageBits;
     if (last - first >= 4096) {
-        return true; // a write over 16 MiB: not worth the walk
+        return true; // over 16 MiB: not worth the walk
     }
     for (u64 page = first; page <= last; ++page) {
         u64 slot = HullHash(resource, page);
         for (u32 probe = 0; probe < HullProbes; ++probe, slot = (slot + 1) & (HullSlots - 1)) {
-            const auto& hull = read_hulls[slot];
+            const auto& hull = table.hulls[slot];
             if (hull.epoch != access_epoch) {
-                break; // an insert would have taken this slot: the page was not read
+                break; // an insert would have taken this slot: the page was not noted
             }
             if (hull.resource == resource && hull.page == page) {
                 if (hull.high >= start && hull.low <= end) {
@@ -890,7 +907,8 @@ bool Runtime::ExactReadOverlap(u64 resource, u64 start, u64 end) {
 }
 
 void Runtime::AccessBuffer(const VideoCore::Buffer* handle, u64 offset, u64 size,
-                           vk::PipelineStageFlags2 src_stage, vk::AccessFlags2 src_access) {
+                           vk::PipelineStageFlags2 src_stage, vk::AccessFlags2 src_access,
+                           bool skin_write) {
     AddressRange range = {
         .resource = reinterpret_cast<u64>(handle),
         .range_start = offset,
@@ -909,8 +927,12 @@ void Runtime::AccessBuffer(const VideoCore::Buffer* handle, u64 offset, u64 size
         vk::AccessFlagBits2::eDepthStencilAttachmentWrite | vk::AccessFlagBits2::eTransferWrite |
         vk::AccessFlagBits2::eMemoryWrite | vk::AccessFlagBits2::eTransformFeedbackWriteEXT;
 
-    if (src_access & READ_MASK) {
-        NoteExactRead(range.resource, range.range_start, range.range_end);
+    const bool skin = skin_write && (src_access & WRITE_MASK);
+    if ((src_access & READ_MASK) && !skin) {
+        NoteExact(read_table, range.resource, range.range_start, range.range_end);
+    }
+    if ((src_access & WRITE_MASK) && !skin) {
+        NoteExact(write_table, range.resource, range.range_start, range.range_end);
     }
     // bbport: reads are tracked at 4 KiB granularity. Constant data comes from ring allocations
     // at a new offset every draw; rounded, they land in ranges already present and the
@@ -940,7 +962,7 @@ void Runtime::AccessBuffer(const VideoCore::Buffer* handle, u64 offset, u64 size
     if (src_access & WRITE_MASK) {
         insert(Access::Write);
     }
-    if (src_access & READ_MASK) {
+    if ((src_access & READ_MASK) && !skin) {
         insert(Access::Read);
     }
 

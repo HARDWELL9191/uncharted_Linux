@@ -2979,8 +2979,10 @@ void Rasterizer::ResetBindings(bool is_compute) {
         const auto write_flag =
             is_written ? vk::AccessFlagBits2::eShaderWrite : vk::AccessFlagBits2::eNone;
         runtime.AccessBuffer(buffer, offset, size, dst_stage,
-                             vk::AccessFlagBits2::eShaderRead | write_flag);
+                             vk::AccessFlagBits2::eShaderRead | write_flag,
+                             is_compute && skin_bind && is_written);
     }
+    skin_bind = false;
     bound_images.clear();
     bound_buffers.clear();
     num_checkpoint_buffers = 0;
@@ -3391,7 +3393,10 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                     texture_cache.InvalidateMemoryFromGPU(vsharp.base_address, size);
                 }
                 if (!host_stream_read) {
-                    needs_barrier |= runtime.IsBufferAccessed(buffer, offset, size, desc.is_written);
+                    skin_bind = stage.pgm_hash == 0x8f067540 || stage.pgm_hash == 0x7d7e7206 ||
+                                stage.pgm_hash == 0x0c936dd6;
+                    needs_barrier |= runtime.IsBufferAccessed(buffer, offset, size, desc.is_written,
+                                                              skin_bind && desc.is_written);
                 }
                 if (const VAddr watch = WatchedGpuWrite();
                     watch && desc.is_written && vsharp.base_address < watch + 0x1000 &&
