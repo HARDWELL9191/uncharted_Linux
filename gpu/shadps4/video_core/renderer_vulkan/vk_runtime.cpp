@@ -827,7 +827,7 @@ void Runtime::AccessBuffer(const VideoCore::Buffer* handle, u64 offset, u64 size
     memory_barrier.srcAccessMask |= src_access & WRITE_MASK;
 }
 
-void Runtime::FlushBarriers() {
+void Runtime::FlushBarriers(std::source_location site) {
     BeforeImageAccess();
     vk::DependencyInfo dep_info{};
 
@@ -844,6 +844,7 @@ void Runtime::FlushBarriers() {
         return;
     }
 
+    WaitSites::NoteBarrier(site, dep_info.memoryBarrierCount != 0, !image_barriers.empty());
     scheduler.EndRendering();
     scheduler.Record([memory = memory_barrier, has_memory = dep_info.memoryBarrierCount != 0,
                       images = scheduler.RecordData(std::span<const vk::ImageMemoryBarrier2>(

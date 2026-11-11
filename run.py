@@ -497,7 +497,15 @@ def main():
     all_cheats = env.setdefault('BB_CHEATS_ALL', env.get('BB_CHEATS', ''))
     while True:
         if player_merge is None:
-            env['BB_GPU_MERGE'] = '0'
+            # shaderwait fork: Uncharted 3 merges, as upstream does. Exact GPU results made its
+            # game threads wait for the GPU on writes next to GPU data (BufferCache
+            # DownloadOnSideQueue / DownloadMemory: 7-9 ms a frame at 4K, frame times 8-18 ms);
+            # merged: 10.9 ms +- 0.4. BB_GPU_MERGE=0 brings it back (floating NPCs were the
+            # reason it was turned on: commit 8a5a00a).
+            if exe == EXECUTABLES['u3']:
+                env.pop('BB_GPU_MERGE', None)
+            else:
+                env['BB_GPU_MERGE'] = '0'
         if player_tiny is None:
             env['BB_TINY_READBACK'] = '1' if exe in (EXECUTABLES['u2'], EXECUTABLES['u3']) else '0'
         # The mesh raycaster copies land in guest memory too (iSubMesh after checkpoints; U1 crashes

@@ -314,7 +314,7 @@ void SignalEop(const PM4CmdEventWriteEop& eop) {
         [] { Platform::IrqC::Instance()->Signal(Platform::InterruptId::GfxEop); });
 }
 
-// diag fork: BB_EOP_SUBMIT (default 1). The Vulkan command buffer was submitted only when the
+// diag fork: BB_EOP_SUBMIT (default 0: only matters with BB_GPU_MERGE=0). The Vulkan command buffer was submitted only when the
 // guest's submission ended (~2 per frame in Uncharted 3), so one tick covered half a frame of
 // GPU work. A guest thread that reads GPU results back (BufferCache::DownloadOnSideQueue)
 // waited for that whole tick: ~0.8 times and 7-9 ms per frame at 4K, with the GPU idle while
@@ -325,7 +325,7 @@ void SignalEop(const PM4CmdEventWriteEop& eop) {
 static void MaybeSubmitAtEop(Vulkan::Rasterizer& rasterizer) {
     static const int mode = [] {
         const char* env = std::getenv("BB_EOP_SUBMIT");
-        const int value = env ? std::atoi(env) : 1;
+        const int value = env ? std::atoi(env) : 0;
         std::printf("End-of-pipe submissions: %s\n",
                     value == 0 ? "off" : value == 2 ? "always" : "while the guest reads GPU data back");
         return value;

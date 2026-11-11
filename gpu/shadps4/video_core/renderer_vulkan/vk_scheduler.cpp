@@ -482,9 +482,59 @@ void Note(const std::source_location& site, u64 ns) {
     sites.push_back({site.file_name(), site.line(), site.function_name(), ns, 1, ns > 100'000});
 }
 
+namespace {
+struct BarrierSite {
+    const char* file;
+    u32 line;
+    u64 memory;
+    u64 images;
+};
+std::mutex barrier_mutex;
+std::vector<BarrierSite> barrier_sites;
+} // namespace
+
+void NoteBarrier(const std::source_location& site, bool memory, bool images) {
+    if (!Enabled()) {
+        return;
+    }
+    std::scoped_lock lk{barrier_mutex};
+    for (auto& s : barrier_sites) {
+        if (s.line == site.line() && std::strcmp(s.file, site.file_name()) == 0) {
+            s.memory += memory;
+            s.images += images;
+            return;
+        }
+    }
+    barrier_sites.push_back({site.file_name(), site.line(), memory, images});
+}
+
 void Print(double frames) {
     if (!Enabled() || frames <= 0) {
         return;
+    }
+    {
+        std::vector<BarrierSite> barriers;
+        {
+            std::scoped_lock lk{barrier_mutex};
+            barriers.swap(barrier_sites);
+        }
+        std::sort(barriers.begin(), barriers.end(), [](const BarrierSite& a, const BarrierSite& b) {
+            return a.memory + a.images > b.memory + b.images;
+        });
+        static u64 last_draws = 0, last_dispatches = 0;
+        const u64 draws_now = BbStats::draws.load(), dispatches_now = BbStats::dispatches.load();
+        std::printf("Barrier sites (pipeline barriers by source line, per frame; draws %.0f, "
+                    "dispatches %.0f):",
+                    (draws_now - last_draws) / frames, (dispatches_now - last_dispatches) / frames);
+        last_draws = draws_now;
+        last_dispatches = dispatches_now;
+        for (std::size_t i = 0; i < barriers.size() && i < 8; ++i) {
+            const auto& s = barriers[i];
+            const char* base = std::strrchr(s.file, '/');
+            std::printf("%s %s:%u %.1f buffer, %.1f image", i ? ";" : "", base ? base + 1 : s.file,
+                        s.line, s.memory / frames, s.images / frames);
+        }
+        std::printf("\n");
     }
     std::vector<Site> copy;
     {

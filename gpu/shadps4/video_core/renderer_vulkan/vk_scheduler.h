@@ -984,4 +984,7 @@ namespace Vulkan::WaitSites {
 void Note(const std::source_location& site, u64 ns);
 /// Prints the sites that waited longest since the last call, per frame, and resets them.
 void Print(double frames);
+/// diag fork: pipeline barriers recorded per source line (each one makes the GPU finish the work
+/// before it): `memory` for buffer data, `images` for image layouts.
+void NoteBarrier(const std::source_location& site, bool memory, bool images);
 } // namespace Vulkan::WaitSites
