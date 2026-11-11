@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2025 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdio>
+#include <cstdlib>
+#include <algorithm>
 #include <boost/container/small_vector.hpp>
 #include "bbport_toggles.h"
 #include "video_core/buffer_cache/buffer.h"
@@ -765,10 +768,125 @@ bool Runtime::IsBufferAccessed(const VideoCore::Buffer* handle, u64 offset, u64 
         .range_end = offset + size - 1,
     };
     bool has_access = barrier_tracker.FindRange(range, Access::Write);
+    if (has_access) {
+        WaitSites::NoteConflict(check_read_access ? 1 : 0);
+    }
     if (check_read_access && !has_access) {
         has_access |= barrier_tracker.FindRange(range, Access::Read);
+        if (has_access) {
+            static const bool exact = [] {
+                const char* env = std::getenv("BB_EXACT_READ_BARRIERS");
+                const bool on = !(env && env[0] == '0');
+                std::printf("Barriers: writes next to earlier reads %s\n",
+                            on ? "need none unless the bytes overlap" : "take one per 4 KiB page");
+                return on;
+            }();
+            if (exact && !ExactReadOverlap(range.resource, range.range_start, range.range_end)) {
+                has_access = false;
+                WaitSites::NoteConflict(3);
+            } else {
+                WaitSites::NoteConflict(2);
+            }
+        }
     }
     return has_access;
+}
+
+namespace {
+constexpr u64 HullPageBits = 12;
+constexpr u64 HullSlots = 1u << 16;
+constexpr u32 HullProbes = 8;
+constexpr u64 HullMaxPages = 8;
+inline u64 HullHash(u64 resource, u64 page) {
+    u64 hash = (resource ^ page * 0x9E3779B97F4A7C15ull);
+    hash = (hash ^ hash >> 31) * 0xFF51AFD7ED558CCDull;
+    return (hash ^ hash >> 29) & (HullSlots - 1);
+}
+} // namespace
+
+void Runtime::NoteExactRead(u64 resource, u64 start, u64 end) {
+    if (hulls_imprecise_epoch == access_epoch) {
+        return;
+    }
+    if (read_hulls.empty()) {
+        read_hulls.resize(HullSlots);
+    }
+    const u64 first = start >> HullPageBits, last = end >> HullPageBits;
+    if (last - first >= HullMaxPages) {
+        if (big_reads_epoch != access_epoch) {
+            big_reads.clear();
+            big_reads_epoch = access_epoch;
+        }
+        for (const auto& big : big_reads) {
+            if (big.resource == resource && big.start <= start && big.end >= end) {
+                return;
+            }
+        }
+        if (big_reads.size() >= 256) {
+            hulls_imprecise_epoch = access_epoch;
+            return;
+        }
+        big_reads.push_back({resource, start, end});
+        return;
+    }
+    for (u64 page = first; page <= last; ++page) {
+        const u64 page_start = page << HullPageBits;
+        const u64 low = std::max(start, page_start);
+        const u64 high = std::min(end, page_start + ((u64{1} << HullPageBits) - 1));
+        u64 slot = HullHash(resource, page);
+        bool placed = false;
+        for (u32 probe = 0; probe < HullProbes; ++probe, slot = (slot + 1) & (HullSlots - 1)) {
+            auto& hull = read_hulls[slot];
+            if (hull.epoch != access_epoch) {
+                hull = {resource, page, low, high, access_epoch};
+                placed = true;
+                break;
+            }
+            if (hull.resource == resource && hull.page == page) {
+                hull.low = std::min(hull.low, low);
+                hull.high = std::max(hull.high, high);
+                placed = true;
+                break;
+            }
+        }
+        if (!placed) {
+            hulls_imprecise_epoch = access_epoch; // table full here: every write takes its barrier
+            return;
+        }
+    }
+}
+
+bool Runtime::ExactReadOverlap(u64 resource, u64 start, u64 end) {
+    if (hulls_imprecise_epoch == access_epoch || read_hulls.empty()) {
+        return true;
+    }
+    if (big_reads_epoch == access_epoch) {
+        for (const auto& big : big_reads) {
+            if (big.resource == resource && big.end >= start && big.start <= end) {
+                return true;
+            }
+        }
+    }
+    const u64 first = start >> HullPageBits, last = end >> HullPageBits;
+    if (last - first >= 4096) {
+        return true; // a write over 16 MiB: not worth the walk
+    }
+    for (u64 page = first; page <= last; ++page) {
+        u64 slot = HullHash(resource, page);
+        for (u32 probe = 0; probe < HullProbes; ++probe, slot = (slot + 1) & (HullSlots - 1)) {
+            const auto& hull = read_hulls[slot];
+            if (hull.epoch != access_epoch) {
+                break; // an insert would have taken this slot: the page was not read
+            }
+            if (hull.resource == resource && hull.page == page) {
+                if (hull.high >= start && hull.low <= end) {
+                    return true;
+                }
+                break;
+            }
+        }
+    }
+    return false;
 }
 
 void Runtime::AccessBuffer(const VideoCore::Buffer* handle, u64 offset, u64 size,
@@ -791,6 +909,9 @@ void Runtime::AccessBuffer(const VideoCore::Buffer* handle, u64 offset, u64 size
         vk::AccessFlagBits2::eDepthStencilAttachmentWrite | vk::AccessFlagBits2::eTransferWrite |
         vk::AccessFlagBits2::eMemoryWrite | vk::AccessFlagBits2::eTransformFeedbackWriteEXT;
 
+    if (src_access & READ_MASK) {
+        NoteExactRead(range.resource, range.range_start, range.range_end);
+    }
     // bbport: reads are tracked at 4 KiB granularity. Constant data comes from ring allocations
     // at a new offset every draw; rounded, they land in ranges already present and the
     // insert returns early instead of growing the tree until the next barrier flush.

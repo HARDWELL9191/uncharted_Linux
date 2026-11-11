@@ -493,6 +493,11 @@ std::mutex barrier_mutex;
 std::vector<BarrierSite> barrier_sites;
 } // namespace
 
+std::atomic<u64> conflict_counts[4];
+void NoteConflict(u32 kind) {
+    conflict_counts[kind & 3].fetch_add(1, std::memory_order_relaxed);
+}
+
 void NoteBarrier(const std::source_location& site, bool memory, bool images) {
     if (!Enabled()) {
         return;
@@ -535,6 +540,11 @@ void Print(double frames) {
                         s.line, s.memory / frames, s.images / frames);
         }
         std::printf("\n");
+        std::printf("Barrier causes (buffer bindings per frame): read after write %.1f, write after "
+                    "write %.1f, write over earlier reads %.1f, write beside earlier reads (no "
+                    "barrier) %.1f\n",
+                    conflict_counts[0].exchange(0) / frames, conflict_counts[1].exchange(0) / frames,
+                    conflict_counts[2].exchange(0) / frames, conflict_counts[3].exchange(0) / frames);
     }
     std::vector<Site> copy;
     {

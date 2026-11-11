@@ -987,4 +987,7 @@ void Print(double frames);
 /// diag fork: pipeline barriers recorded per source line (each one makes the GPU finish the work
 /// before it): `memory` for buffer data, `images` for image layouts.
 void NoteBarrier(const std::source_location& site, bool memory, bool images);
+/// Why a buffer binding asked for a barrier: 0 a read after an earlier write, 1 a write after an
+/// earlier write, 2 a write over bytes read earlier, 3 a write beside earlier reads (none needed).
+void NoteConflict(u32 kind);
 } // namespace Vulkan::WaitSites

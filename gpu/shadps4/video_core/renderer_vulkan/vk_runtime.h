@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <vector>
 #include <source_location>
 #include "common/types.h"
 #include "video_core/buffer_cache/buffer.h"
@@ -131,6 +132,32 @@ private:
     };
     std::array<AccessMemo, 512> access_memo{};
     u32 access_epoch = 1;
+
+    // shaderwait fork: reads go into barrier_tracker rounded to 4 KiB pages, so a write next to
+    // an earlier read in the same page asked for a barrier it did not need. The game's per-frame
+    // rings hand out constants (read) and skinning output (written) side by side: ~800 barriers
+    // a frame in front of Uncharted 3's skinning dispatches, each making the GPU finish what
+    // came before (Barrier sites, vk_rasterizer.cpp:2342). Per page, the hull of the exact
+    // bytes read since the last flush; a write that misses the hull of every page it touches
+    // overlaps no read. BB_EXACT_READ_BARRIERS=0: off.
+    struct ReadHull {
+        u64 resource;
+        u64 page;
+        u64 low;
+        u64 high;
+        u32 epoch;
+    };
+    std::vector<ReadHull> read_hulls;
+    struct BigRead {
+        u64 resource;
+        u64 start;
+        u64 end;
+    };
+    std::vector<BigRead> big_reads;
+    u32 big_reads_epoch = 0;
+    u32 hulls_imprecise_epoch = 0;
+    void NoteExactRead(u64 resource, u64 start, u64 end);
+    bool ExactReadOverlap(u64 resource, u64 start, u64 end);
 };
 
 } // namespace Vulkan
