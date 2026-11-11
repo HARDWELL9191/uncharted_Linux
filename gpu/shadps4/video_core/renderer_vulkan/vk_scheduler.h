@@ -689,15 +689,15 @@ public:
     void Flush();
 
     /// Sends the current execution context to the GPU and waits for it to complete.
-    void Finish();
+    void Finish(std::source_location site = std::source_location::current());
 
     /// bbport: waits for the work submitted so far but leaves the command buffer being
     /// recorded open, so a CommandBuffer() the caller holds stays valid (Finish() submits it:
     /// recording into a submitted buffer crashes AMD's driver).
-    void WaitSubmitted();
+    void WaitSubmitted(std::source_location site = std::source_location::current());
 
     /// Waits for the given tick to trigger on the GPU.
-    void Wait(u64 tick);
+    void Wait(u64 tick, std::source_location site = std::source_location::current());
 
     /// bbport: prints every scheduler's timeline and the last queue submissions (GPU stall).
     static void ReportStall();
@@ -978,3 +978,10 @@ private:
 };
 
 } // namespace Vulkan
+
+namespace Vulkan::WaitSites {
+/// diag fork: wall time each source line spends blocked in Scheduler::Wait (BB_FRAME_STATS).
+void Note(const std::source_location& site, u64 ns);
+/// Prints the sites that waited longest since the last call, per frame, and resets them.
+void Print(double frames);
+} // namespace Vulkan::WaitSites

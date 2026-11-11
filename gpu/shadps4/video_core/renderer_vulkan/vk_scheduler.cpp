@@ -416,30 +416,96 @@ void Scheduler::Flush() {
     Flush(info);
 }
 
-void Scheduler::Finish() {
+void Scheduler::Finish(std::source_location site) {
     // When finishing, we need to wait for the submission to have executed on the device.
     const u64 presubmit_tick = CurrentTick();
     SubmitInfo info{};
     SubmitExecution(info);
-    Wait(presubmit_tick);
+    Wait(presubmit_tick, site);
 }
 
-void Scheduler::WaitSubmitted() {
+void Scheduler::WaitSubmitted(std::source_location site) {
     const u64 tick = CurrentTick();
     if (tick > 1) {
-        Wait(tick - 1);
+        Wait(tick - 1, site);
     }
 }
 
-void Scheduler::Wait(u64 tick) {
+void Scheduler::Wait(u64 tick, std::source_location site) {
     if (tick >= work_semaphore.CurrentTick()) {
         // Make sure we are not waiting for the current tick without signalling
         SubmitInfo info{};
         Flush(info);
     }
     BbStats::WaitTimer timer{BbStats::tick_wait_ns};
+    const auto start = std::chrono::steady_clock::now();
     work_semaphore.Wait(tick);
+    WaitSites::Note(site, u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                  std::chrono::steady_clock::now() - start)
+                                  .count()));
 }
+
+namespace WaitSites {
+namespace {
+struct Site {
+    const char* file;
+    u32 line;
+    const char* function;
+    u64 ns;
+    u64 count;
+    u64 blocked; // waits over 0.1 ms
+};
+std::mutex sites_mutex;
+std::vector<Site> sites;
+bool Enabled() {
+    static const bool on = [] {
+        const char* env = std::getenv("BB_FRAME_STATS");
+        return env && env[0] == '1';
+    }();
+    return on;
+}
+} // namespace
+
+void Note(const std::source_location& site, u64 ns) {
+    if (!Enabled()) {
+        return;
+    }
+    std::scoped_lock lk{sites_mutex};
+    for (auto& s : sites) {
+        if (s.line == site.line() && std::strcmp(s.file, site.file_name()) == 0) {
+            s.ns += ns;
+            ++s.count;
+            s.blocked += ns > 100'000;
+            return;
+        }
+    }
+    sites.push_back({site.file_name(), site.line(), site.function_name(), ns, 1, ns > 100'000});
+}
+
+void Print(double frames) {
+    if (!Enabled() || frames <= 0) {
+        return;
+    }
+    std::vector<Site> copy;
+    {
+        std::scoped_lock lk{sites_mutex};
+        copy.swap(sites);
+    }
+    std::sort(copy.begin(), copy.end(), [](const Site& a, const Site& b) { return a.ns > b.ns; });
+    std::printf("Wait sites (GPU waits by source line, per frame):");
+    if (copy.empty()) {
+        std::printf(" none");
+    }
+    for (std::size_t i = 0; i < copy.size() && i < 8; ++i) {
+        const auto& s = copy[i];
+        const char* base = std::strrchr(s.file, '/');
+        std::printf("%s %s:%u %.2f ms (%.1f waits, %.1f blocking) [%s]", i ? ";" : "",
+                    base ? base + 1 : s.file, s.line, s.ns / 1e6 / frames, s.count / frames,
+                    s.blocked / frames, s.function);
+    }
+    std::printf("\n");
+}
+} // namespace WaitSites
 
 void Scheduler::PopPendingOperations() {
     if (num_pending_ops.load(std::memory_order_acquire) == 0) {

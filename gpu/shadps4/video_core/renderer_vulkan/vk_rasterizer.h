@@ -4,6 +4,7 @@
 #pragma once
 
 #include <optional>
+#include <source_location>
 #include <mutex>
 #include <vector>
 
@@ -163,7 +164,7 @@ public:
     void UnmapMemory(VAddr addr, u64 size);
 
     u64 Flush();
-    void Finish();
+    void Finish(std::source_location site = std::source_location::current());
     void OnSubmit();
 
     PipelineCache& GetPipelineCache() {

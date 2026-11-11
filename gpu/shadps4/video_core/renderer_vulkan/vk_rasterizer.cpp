@@ -2464,9 +2464,9 @@ u64 Rasterizer::Flush() {
     return current_tick;
 }
 
-void Rasterizer::Finish() {
+void Rasterizer::Finish(std::source_location site) {
     DrainDrawPipe();
-    scheduler.Finish();
+    scheduler.Finish(site);
 }
 
 void Rasterizer::OnSubmit() {

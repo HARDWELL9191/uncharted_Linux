@@ -491,6 +491,7 @@ void VideoOutDriver::Flip(const Request& req) {
                         BbStats::queue_spin_ns.exchange(0) / (window * 1e7),
                         BbStats::longest_wait_ns.exchange(0) / 1e6,
                         static_cast<unsigned long long>(BbStats::longest_wait_addr.exchange(0)));
+            Vulkan::WaitSites::Print(frames);
             // Frame pacing: spread of the guest flip intervals (judder that the mean hides).
             if (intervals.size() > 2) {
                 std::vector<double> sorted = intervals;
