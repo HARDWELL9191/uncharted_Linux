@@ -492,7 +492,8 @@ void Print(double frames) {
         copy.swap(sites);
     }
     std::sort(copy.begin(), copy.end(), [](const Site& a, const Site& b) { return a.ns > b.ns; });
-    std::printf("Wait sites (GPU waits by source line, per frame):");
+    std::printf("Wait sites (GPU waits by source line, per frame; end-of-pipe submissions %.1f):",
+                BbStats::eop_submits.exchange(0) / frames);
     if (copy.empty()) {
         std::printf(" none");
     }

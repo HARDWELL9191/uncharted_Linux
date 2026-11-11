@@ -246,6 +246,11 @@ bool BufferCache::DownloadOnSideQueue(VAddr page, u64 length) {
         // back below handles those.
         if (fault_tick && !scheduler.IsFree(fault_tick) && fault_tick < scheduler.CurrentTick()) {
             scheduler.Wait(fault_tick);
+            BbStats::last_fault_wait_ns.store(
+                u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count()),
+                std::memory_order_relaxed);
         }
     }
     {

@@ -314,6 +314,45 @@ void SignalEop(const PM4CmdEventWriteEop& eop) {
         [] { Platform::IrqC::Instance()->Signal(Platform::InterruptId::GfxEop); });
 }
 
+// diag fork: BB_EOP_SUBMIT (default 1). The Vulkan command buffer was submitted only when the
+// guest's submission ended (~2 per frame in Uncharted 3), so one tick covered half a frame of
+// GPU work. A guest thread that reads GPU results back (BufferCache::DownloadOnSideQueue)
+// waited for that whole tick: ~0.8 times and 7-9 ms per frame at 4K, with the GPU idle while
+// the guest could not submit the next work (Wait sites in BB_FRAME_STATS). Submitting at the
+// end-of-pipe events the guest synchronizes on ends a tick right after the work it waits for,
+// and the GPU starts on it earlier. 1: only while such read-back waits happened in the last
+// 2 s (gameplay), 2: always, 0: off. At least 64 draws/dispatches per submission.
+static void MaybeSubmitAtEop(Vulkan::Rasterizer& rasterizer) {
+    static const int mode = [] {
+        const char* env = std::getenv("BB_EOP_SUBMIT");
+        const int value = env ? std::atoi(env) : 1;
+        std::printf("End-of-pipe submissions: %s\n",
+                    value == 0 ? "off" : value == 2 ? "always" : "while the guest reads GPU data back");
+        return value;
+    }();
+    if (mode == 0) {
+        return;
+    }
+    static u64 last_work = 0;
+    const u64 work = BbStats::draws.load(std::memory_order_relaxed) +
+                     BbStats::dispatches.load(std::memory_order_relaxed);
+    if (work - last_work < 64) {
+        return;
+    }
+    if (mode == 1) {
+        const u64 now = u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                std::chrono::steady_clock::now().time_since_epoch())
+                                .count());
+        const u64 last = BbStats::last_fault_wait_ns.load(std::memory_order_relaxed);
+        if (last == 0 || now - last > 2'000'000'000ull) {
+            return;
+        }
+    }
+    last_work = work;
+    BbStats::eop_submits.fetch_add(1, std::memory_order_relaxed);
+    rasterizer.Flush();
+}
+
 // bbport: end-of-pipe/-shader events run in order with the draws (Rasterizer::RunInOrder: on
 // the draw recording thread when the draw pipeline is in use).
 void RunEventWriteEop(Vulkan::Rasterizer& rasterizer, const u8* data) {
@@ -1410,6 +1449,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                     if (rasterizer->RunInOrder(&RunEventWriteEop, event_eop, sizeof(*event_eop))) {
                         NotePendingFences(*event_eop);
                     }
+                    MaybeSubmitAtEop(*rasterizer);
                 } else {
                     SignalEop(*event_eop);
                 }

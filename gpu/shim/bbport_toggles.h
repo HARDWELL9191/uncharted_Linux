@@ -113,6 +113,10 @@ inline std::atomic<std::uint64_t> image_upload_bytes{0};
 inline std::atomic<std::uint64_t> buffer_upload_bytes{0};
 inline std::atomic<int> gpu_thread_clock{-1}; ///< clockid_t of the GPU command thread
 inline std::atomic<std::uint64_t> draws{0}, dispatches{0}, submissions{0};
+/// diag fork: when a guest thread last waited for GPU work to read its results back
+/// (BufferCache::DownloadOnSideQueue, steady_clock ns), and the submissions made at end-of-pipe
+/// events because of it (BB_EOP_SUBMIT, liverpool.cpp).
+inline std::atomic<std::uint64_t> last_fault_wait_ns{0}, eop_submits{0};
 /// Frames the GPU command thread has started (display pass), for per-frame diagnostics.
 inline std::atomic<std::uint64_t> gpu_frames{0};
 /// Wall time spent in operations suspected of stalls (ns, all threads).
