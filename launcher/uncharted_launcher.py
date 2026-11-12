@@ -578,7 +578,16 @@ def game_environment(s, start=None):
         env['BB_OFFLINE_NPID'] = '1'
     env['BB_FULLSCREEN'] = '1' if s['fullscreen'] else '0'
     env['BB_PRESENT_MODE'] = s['present_mode']
-    env['BB_VBLANK_HZ'] = str(s.get('frame_rate') or '60')
+    # shaderwait fork: above 60 the game's vblank runs at 480 Hz (BB_VBLANK_HZ=0) under a frame
+    # limit of the chosen rate. At a fixed 100 or 120 Hz vblank a frame that is a little late
+    # waits a whole period (10/20 ms judder); this way it costs ~2 ms. The player's Environment
+    # entries still override both.
+    rate = str(s.get('frame_rate') or '60')
+    if rate.isdigit() and int(rate) > 60:
+        env['BB_VBLANK_HZ'] = '0'
+        env['BB_FPS_LIMIT'] = rate
+    else:
+        env['BB_VBLANK_HZ'] = rate
     env['BB_WINDOW_SIZE'] = str(s.get('window_size') or '1920x1080')
     if str(s.get('speakers') or 'auto') != 'auto':
         env['BB_SPEAKERS'] = str(s['speakers'])

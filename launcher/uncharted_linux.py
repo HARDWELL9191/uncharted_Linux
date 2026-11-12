@@ -588,6 +588,7 @@ def deck_environment(settings, env):
         return
     rate = str(settings.get('frame_rate') or '')
     env['BB_VBLANK_HZ'] = rate if rate in DECK_FRAME_RATES else DECK_SETTINGS['frame_rate']
+    env.pop('BB_FPS_LIMIT', None)       # the launcher's limit for rates above 60: not on the Deck
     env['BB_WINDOW_SIZE'] = '1280x800'   # the Deck's screen: no 1080p output pass to scale down
     env['BB_RENDER_720P'] = '1'          # all three games render at 1280x720 (scripts/render_720p.py)
     env['BB_PRESENT_MODE'] = 'Fifo'      # gamescope paces FIFO best
